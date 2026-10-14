@@ -1,0 +1,57 @@
+name: Build APK
+
+on:
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout Code
+        uses: actions/checkout@v4
+
+      - name: Setup Java
+        uses: actions/setup-java@v4
+        with:
+          distribution: 'temurin'
+          java-version: '17'
+
+      - name: Setup Flutter
+        uses: subosito/flutter-action@v2
+        with:
+          channel: 'stable'
+
+      - name: Setup Android Project
+        run: |
+          mkdir temp_build
+          cd temp_build
+          flutter create . --project-name=abomoslem_app --platforms=android --org=com.abomoslem
+          cp -r android ../
+          cd ..
+          rm -rf temp_build
+
+      - name: Setup Dependencies and Icon
+        run: |
+          flutter pub add sqflite path url_launcher excel path_provider share_plus file_picker intl pdf printing
+          flutter pub add --dev flutter_launcher_icons
+          if [ -f app_icon.png ]; then
+            cat << 'EOF' >> pubspec.yaml
+
+flutter_launcher_icons:
+  android: "launcher_icon"
+  ios: false
+  image_path: "app_icon.png"
+EOF
+            dart run flutter_launcher_icons || true
+          fi
+
+      - name: Build APK
+        run: |
+          flutter build apk --release --no-tree-shake-icons
+
+      - name: Upload APK
+        uses: actions/upload-artifact@v4
+        with:
+          name: abomoslem-app
+          path: build/app/outputs/flutter-apk/app-release.apk
+          
