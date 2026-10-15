@@ -24,14 +24,9 @@ jobs:
 
       - name: Prepare Clean Project Configuration
         run: |
-          # 1. حفظ كود تطبيقك الأساسي مؤقتاً
           cp lib/main.dart /tmp/my_main.dart
-
-          # 2. إنشاء مجلد أندرويد القياسي
           rm -rf android
           flutter create . --project-name=abomoslem_app --platforms=android --org=com.abomoslem --overwrite
-
-          # 3. استعادة كود تطبيقك الأصلي
           cp /tmp/my_main.dart lib/main.dart
 
           cat << 'EOF' > pubspec.yaml
@@ -59,10 +54,15 @@ jobs:
               sdk: flutter
             flutter_lints: ^3.0.0
             flutter_launcher_icons: ^0.13.1
+
           flutter_launcher_icons:
-            android: "launcher_icon"
+            android: true
             ios: false
             image_path: "app_icon.png"
+            min_sdk_android: 21
+            adaptive_icon_background: "#FFFFFF"
+            adaptive_icon_foreground: "app_icon.png"
+
           flutter:
             uses-material-design: true
           EOF
@@ -71,7 +71,7 @@ jobs:
         run: |
           flutter pub get
           if [ -f app_icon.png ]; then
-            dart run flutter_launcher_icons || true
+            dart run flutter_launcher_icons
           fi
           flutter build apk --release --no-tree-shake-icons
 
