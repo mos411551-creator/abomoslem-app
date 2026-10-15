@@ -21,7 +21,7 @@ jobs:
         with:
           channel: 'stable'
 
-      - name: Setup Android Project
+      - name: Setup Android Project & Pubspec
         run: |
           mkdir temp_build
           cd temp_build
@@ -30,17 +30,50 @@ jobs:
           cd ..
           rm -rf temp_build
 
-      - name: Setup Dependencies and Icon
+          cat << 'EOF' > pubspec.yaml
+          name: abomoslem_app
+          description: Abu Moslem App
+          publish_to: 'none'
+          version: 1.0.0+1
+
+          environment:
+            sdk: '>=3.0.0 <4.0.0'
+
+          dependencies:
+            flutter:
+              sdk: flutter
+            sqflite: ^2.3.0
+            path: ^1.8.3
+            url_launcher: ^6.2.1
+            excel: ^4.0.0
+            path_provider: ^2.1.1
+            share_plus: ^7.2.1
+            file_picker: ^6.1.1
+            intl: ^0.19.0
+            pdf: ^3.10.7
+            printing: ^5.11.1
+
+          dev_dependencies:
+            flutter_test:
+              sdk: flutter
+            flutter_lints: ^2.0.0
+            flutter_launcher_icons: ^0.13.1
+
+          flutter_launcher_icons:
+            android: "launcher_icon"
+            ios: false
+            image_path: "app_icon.png"
+
+          flutter:
+            uses-material-design: true
+          EOF
+
+      - name: Setup Icon & Build APK
         run: |
-          flutter pub add sqflite path url_launcher excel path_provider share_plus file_picker intl pdf printing
-          flutter pub add --dev flutter_launcher_icons
+          flutter pub get
           if [ -f app_icon.png ]; then
-            printf "\nflutter_launcher_icons:\n  android: \"launcher_icon\"\n  ios: false\n  image_path: \"app_icon.png\"\n" >> pubspec.yaml
             dart run flutter_launcher_icons || true
           fi
-
-      - name: Build APK
-        run: |
           flutter build apk --release --no-tree-shake-icons
 
       - name: Upload APK
@@ -48,3 +81,4 @@ jobs:
         with:
           name: abomoslem-app
           path: build/app/outputs/flutter-apk/app-release.apk
+          
