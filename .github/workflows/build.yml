@@ -19,41 +19,13 @@ jobs:
       - name: Setup Flutter
         uses: subosito/flutter-action@v2
         with:
+          flutter-version: '3.22.2'
           channel: 'stable'
 
       - name: Prepare Clean Project Configuration
         run: |
           rm -rf android
           flutter create . --project-name=abomoslem_app --platforms=android --org=com.abomoslem --overwrite
-
-          python3 -c "
-          import glob, os
-
-          # تعديل build.gradle الرئيسي لفرض compileSdkVersion للمكتبات الفرعية (حل مشكلة lStar)
-          for root_gradle in glob.glob('android/build.gradle*'):
-              with open(root_gradle, 'a') as f:
-                  f.write('''
-          subprojects {
-              afterEvaluate { project ->
-                  if (project.hasProperty('android')) {
-                      android {
-                          compileSdkVersion 34
-                      }
-                  }
-              }
-          }
-          ''')
-
-          # تعديل ملف app gradle لرفع compileSdk و targetSdk و minSdk
-          for app_gradle in glob.glob('android/app/build.gradle*'):
-              with open(app_gradle, 'r') as f:
-                  content = f.read()
-              content = content.replace('flutter.compileSdkVersion', '34')
-              content = content.replace('flutter.targetSdkVersion', '34')
-              content = content.replace('flutter.minSdkVersion', '21')
-              with open(app_gradle, 'w') as f:
-                  f.write(content)
-          "
 
           cat << 'EOF' > pubspec.yaml
           name: abomoslem_app
