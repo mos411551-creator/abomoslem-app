@@ -19,17 +19,31 @@ jobs:
       - name: Setup Flutter
         uses: subosito/flutter-action@v2
         with:
-          flutter-version: '3.24.5'
           channel: 'stable'
 
-      - name: Prepare Clean Android Project
+      - name: Prepare Clean Project Configuration
         run: |
           rm -rf android
           flutter create . --project-name=abomoslem_app --platforms=android --org=com.abomoslem --overwrite
 
+          cat << 'EOF' >> android/build.gradle
+          subprojects {
+              afterEvaluate { project ->
+                  if (project.hasProperty("android")) {
+                      android {
+                          compileSdkVersion 34
+                          buildToolsVersion "34.0.0"
+                      }
+                  }
+              }
+          }
+          EOF
+
           python3 -c "
           with open('android/app/build.gradle', 'r') as f:
               s = f.read()
+          s = s.replace('flutter.compileSdkVersion', '34')
+          s = s.replace('flutter.targetSdkVersion', '34')
           s = s.replace('flutter.minSdkVersion', '21')
           with open('android/app/build.gradle', 'w') as f:
               f.write(s)
