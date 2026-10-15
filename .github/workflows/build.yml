@@ -24,8 +24,15 @@ jobs:
 
       - name: Prepare Clean Project Configuration
         run: |
+          # 1. حفظ كود تطبيقك الأساسي مؤقتاً
+          cp lib/main.dart /tmp/my_main.dart
+
+          # 2. إنشاء مجلد أندرويد القياسي
           rm -rf android
           flutter create . --project-name=abomoslem_app --platforms=android --org=com.abomoslem --overwrite
+
+          # 3. استعادة كود تطبيقك الأصلي
+          cp /tmp/my_main.dart lib/main.dart
 
           cat << 'EOF' > pubspec.yaml
           name: abomoslem_app
