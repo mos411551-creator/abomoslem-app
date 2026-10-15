@@ -35,9 +35,11 @@ jobs:
           for path in glob.glob('android/app/build.gradle*'):
               with open(path, 'r') as f:
                   s = f.read()
-              s = s.replace('flutter.compileSdkVersion', '34')
+              s = s.replace('flutter.compileSdkVersion', '36')
               s = s.replace('flutter.minSdkVersion', '21')
-              s = s.replace('flutter.targetSdkVersion', '34')
+              s = s.replace('flutter.targetSdkVersion', '36')
+              s = s.replace('compileSdk = 34', 'compileSdk = 36')
+              s = s.replace('targetSdk = 34', 'targetSdk = 36')
               with open(path, 'w') as f:
                   f.write(s)
           "
