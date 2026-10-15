@@ -1,6 +1,5 @@
 import 'dart:io';
-import 'package:flutter/material.dart' hide TextDirection;
-import 'dart:ui' as ui;
+import 'package:flutter/material.dart';
 import 'package:sqflite/sqflite.dart';
 import 'package:path/path.dart' as p;
 import 'package:url_launcher/url_launcher.dart';
@@ -32,11 +31,15 @@ class MobileBillingApp extends StatelessWidget {
       theme: ThemeData(
         colorSchemeSeed: Colors.indigo,
         useMaterial3: true,
+        fontFamily: 'Roboto',
       ),
-      home: const Directionality(
-        textDirection: ui.TextDirection.rtl,
-        child: HomeScreen(),
-      ),
+      builder: (context, child) {
+        return Directionality(
+          textDirection: TextDirection.rtl,
+          child: child!,
+        );
+      },
+      home: const HomeScreen(),
     );
   }
 }
@@ -48,7 +51,7 @@ class DatabaseHelper {
 
   Future<Database> get database async {
     if (_database != null) return _database!;
-    _database = await _initDB('abomoslem_billing.db');
+    _database = await _initDB('abomoslem_billing_v2.db');
     return _database!;
   }
 
@@ -64,9 +67,13 @@ class DatabaseHelper {
             id INTEGER PRIMARY KEY AUTOINCREMENT,
             name TEXT NOT NULL,
             phone TEXT NOT NULL,
+            plan_name TEXT DEFAULT 'باقة أساسية',
+            monthly_fee REAL NOT NULL,
             total_amount REAL NOT NULL,
             paid_amount REAL DEFAULT 0,
             status TEXT DEFAULT 'unpaid',
+            payment_method TEXT DEFAULT 'كاش',
+            due_day INTEGER DEFAULT 1,
             last_paid_date TEXT,
             notes TEXT,
             created_at TEXT DEFAULT CURRENT_TIMESTAMP
@@ -81,12 +88,17 @@ class DatabaseHelper {
     return await db.insert('customers', row);
   }
 
-  Future<bool> isPhoneExists(String phone) async {
+  Future<int> updateCustomer(int id, Map<String, dynamic> row) async {
+    final db = await instance.database;
+    return await db.update('customers', row, where: 'id = ?', whereArgs: [id]);
+  }
+
+  Future<bool> isPhoneExists(String phone, {int? excludeId}) async {
     final db = await instance.database;
     final res = await db.query(
       'customers',
-      where: 'phone = ?',
-      whereArgs: [phone.trim()],
+      where: excludeId != null ? 'phone = ? AND id != ?' : 'phone = ?',
+      whereArgs: excludeId != null ? [phone.trim(), excludeId] : [phone.trim()],
     );
     return res.isNotEmpty;
   }
@@ -115,7 +127,7 @@ class DatabaseHelper {
     );
   }
 
-  Future<int> updatePayment(int id, double total, double currentPaid, double addAmount) async {
+  Future<int> recordPayment(int id, double total, double currentPaid, double addAmount, String method) async {
     final db = await instance.database;
     double newPaid = currentPaid + addAmount;
     if (newPaid > total) newPaid = total;
@@ -123,18 +135,43 @@ class DatabaseHelper {
     String dateStr = DateFormat('yyyy-MM-dd HH:mm').format(DateTime.now());
     return await db.update(
       'customers',
-      {'paid_amount': newPaid, 'status': status, 'last_paid_date': dateStr},
+      {
+        'paid_amount': newPaid,
+        'status': status,
+        'payment_method': method,
+        'last_paid_date': dateStr,
+      },
       where: 'id = ?',
       whereArgs: [id],
     );
   }
 
-  Future<int> resetMonth() async {
+  Future<int> renewMonthlyCycle() async {
     final db = await instance.database;
-    return await db.update(
-      'customers',
-      {'paid_amount': 0.0, 'status': 'unpaid', 'last_paid_date': null},
-    );
+    final customers = await db.query('customers');
+    int count = 0;
+    for (var c in customers) {
+      int id = c['id'] as int;
+      double total = (c['total_amount'] as num).toDouble();
+      double paid = (c['paid_amount'] as num).toDouble();
+      double monthlyFee = (c['monthly_fee'] as num).toDouble();
+      double debt = total - paid;
+      double newTotal = debt + monthlyFee;
+
+      await db.update(
+        'customers',
+        {
+          'total_amount': newTotal,
+          'paid_amount': 0.0,
+          'status': 'unpaid',
+          'last_paid_date': null,
+        },
+        where: 'id = ?',
+        whereArgs: [id],
+      );
+      count++;
+    }
+    return count;
   }
 
   Future<int> deleteCustomer(int id) async {
@@ -181,18 +218,23 @@ class _HomeScreenState extends State<HomeScreen> {
     });
   }
 
-  void _sendWhatsApp(String phone, String name, double total, double remaining) async {
+  void _sendWhatsApp(String phone, String name, String plan, double total, double remaining) async {
     String clean = phone.replaceAll(RegExp(r'[^0-9]'), '');
     if (clean.startsWith('0')) clean = '20${clean.substring(1)}';
     if (!clean.startsWith('20')) clean = '20$clean';
-    String text = "السلام عليكم أ/ $name\nمعك محل *$storeName* للموبايلات 📱\nتذكير ودي بالحساب:\n━━━━━━━━━━━━━━\n💰 الإجمالي: ${total.toStringAsFixed(0)} ج.م\n✅ المدفوع: ${(total - remaining).toStringAsFixed(0)} ج.م\n🔴 المتبقي: ${remaining.toStringAsFixed(0)} ج.م\n━━━━━━━━━━━━━━\nبرجاء السداد في أقرب وقت، شكراً لثقتك 🙏\n$storePhone";
+    String text = "السلام عليكم أ/ $name\nمعك محل *$storeName* 📱\n"
+        "بخصوص اشتراك: *$plan*\n"
+        "━━━━━━━━━━━━━━\n"
+        "💰 إجمالي المطلوب: ${total.toStringAsFixed(0)} ج.م\n"
+        "✅ المسدد: ${(total - remaining).toStringAsFixed(0)} ج.م\n"
+        "🔴 المتبقي: ${remaining.toStringAsFixed(0)} ج.م\n"
+        "━━━━━━━━━━━━━━\n"
+        "برجاء سرعة السداد، شكراً لثقتك بنا 🙏\n$storePhone";
     final uri = Uri.parse("https://wa.me/$clean?text=${Uri.encodeComponent(text)}");
     try {
       await launchUrl(uri, mode: LaunchMode.externalApplication);
     } catch (_) {
-      if (mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('تعذر فتح تطبيق واتساب')));
-      }
+      if (mounted) ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('تعذر فتح واتساب')));
     }
   }
 
@@ -223,7 +265,7 @@ class _HomeScreenState extends State<HomeScreen> {
                     pw.Column(
                       crossAxisAlignment: pw.CrossAxisAlignment.end,
                       children: [
-                        pw.Text('محل $storeName للموبايلات', style: pw.TextStyle(fontSize: 14, fontWeight: pw.FontWeight.bold)),
+                        pw.Text('محل $storeName للخدمات والاتصالات', style: pw.TextStyle(fontSize: 12, fontWeight: pw.FontWeight.bold)),
                         pw.Text(storePhone, style: const pw.TextStyle(fontSize: 10, color: pdfLib.PdfColors.grey)),
                         pw.Text(date, style: const pw.TextStyle(fontSize: 9)),
                       ],
@@ -231,10 +273,10 @@ class _HomeScreenState extends State<HomeScreen> {
                   ],
                 ),
                 pw.Divider(thickness: 2, color: pdfLib.PdfColors.indigo),
-                pw.SizedBox(height: 12),
+                pw.SizedBox(height: 10),
                 pw.Container(
                   width: double.infinity,
-                  padding: const pw.EdgeInsets.all(10),
+                  padding: const pw.EdgeInsets.all(8),
                   decoration: pw.BoxDecoration(
                     border: pw.Border.all(color: pdfLib.PdfColors.grey300),
                     borderRadius: pw.BorderRadius.circular(6),
@@ -242,16 +284,14 @@ class _HomeScreenState extends State<HomeScreen> {
                   child: pw.Column(
                     crossAxisAlignment: pw.CrossAxisAlignment.start,
                     children: [
-                      pw.Text('بيانات العميل:', style: pw.TextStyle(fontWeight: pw.FontWeight.bold)),
-                      pw.SizedBox(height: 4),
-                      pw.Text('الاسم: ${c['name']}', style: const pw.TextStyle(fontSize: 11)),
-                      pw.Text('الموبايل: ${c['phone']}', style: const pw.TextStyle(fontSize: 11)),
-                      if (c['notes'] != null && c['notes'].toString().isNotEmpty)
-                        pw.Text('ملاحظة: ${c['notes']}', style: const pw.TextStyle(fontSize: 9)),
+                      pw.Text('اسم المشترك: ${c['name']}', style: pw.TextStyle(fontWeight: pw.FontWeight.bold, fontSize: 12)),
+                      pw.Text('رقم الموبايل: ${c['phone']}', style: const pw.TextStyle(fontSize: 10)),
+                      pw.Text('نوع الباقة: ${c['plan_name']}', style: const pw.TextStyle(fontSize: 10)),
+                      pw.Text('طريقة السداد: ${c['payment_method'] ?? "كاش"}', style: const pw.TextStyle(fontSize: 10)),
                     ],
                   ),
                 ),
-                pw.SizedBox(height: 14),
+                pw.SizedBox(height: 12),
                 pw.Table(
                   border: pw.TableBorder.all(color: pdfLib.PdfColors.grey300),
                   children: [
@@ -259,30 +299,32 @@ class _HomeScreenState extends State<HomeScreen> {
                       decoration: const pw.BoxDecoration(color: pdfLib.PdfColors.indigo50),
                       children: [
                         pw.Padding(padding: const pw.EdgeInsets.all(6), child: pw.Text('البيان', style: pw.TextStyle(fontWeight: pw.FontWeight.bold, fontSize: 11))),
-                        pw.Padding(padding: const pw.EdgeInsets.all(6), child: pw.Text('المبلغ', style: pw.TextStyle(fontWeight: pw.FontWeight.bold, fontSize: 11))),
+                        pw.Padding(padding: const pw.EdgeInsets.all(6), child: pw.Text('القيمة', style: pw.TextStyle(fontWeight: pw.FontWeight.bold, fontSize: 11))),
                       ],
                     ),
                     pw.TableRow(children: [
-                      pw.Padding(padding: const pw.EdgeInsets.all(6), child: pw.Text('الإجمالي', style: const pw.TextStyle(fontSize: 11))),
-                      pw.Padding(padding: const pw.EdgeInsets.all(6), child: pw.Text('${total.toStringAsFixed(0)} ج.م', style: const pw.TextStyle(fontSize: 11))),
+                      pw.Padding(padding: const pw.EdgeInsets.all(6), child: pw.Text('قيمة الباقة الشهرية', style: const pw.TextStyle(fontSize: 10))),
+                      pw.Padding(padding: const pw.EdgeInsets.all(6), child: pw.Text('${c['monthly_fee']} ج.م', style: const pw.TextStyle(fontSize: 10))),
                     ]),
                     pw.TableRow(children: [
-                      pw.Padding(padding: const pw.EdgeInsets.all(6), child: pw.Text('المدفوع', style: const pw.TextStyle(fontSize: 11))),
-                      pw.Padding(padding: const pw.EdgeInsets.all(6), child: pw.Text('${paid.toStringAsFixed(0)} ج.م', style: const pw.TextStyle(fontSize: 11, color: pdfLib.PdfColors.green))),
+                      pw.Padding(padding: const pw.EdgeInsets.all(6), child: pw.Text('إجمالي المطلوب (شامل المتأخرات)', style: const pw.TextStyle(fontSize: 10))),
+                      pw.Padding(padding: const pw.EdgeInsets.all(6), child: pw.Text('${total.toStringAsFixed(0)} ج.م', style: const pw.TextStyle(fontSize: 10))),
+                    ]),
+                    pw.TableRow(children: [
+                      pw.Padding(padding: const pw.EdgeInsets.all(6), child: pw.Text('المبلغ المسدد', style: const pw.TextStyle(fontSize: 10))),
+                      pw.Padding(padding: const pw.EdgeInsets.all(6), child: pw.Text('${paid.toStringAsFixed(0)} ج.م', style: const pw.TextStyle(fontSize: 10, color: pdfLib.PdfColors.green))),
                     ]),
                     pw.TableRow(
                       decoration: const pw.BoxDecoration(color: pdfLib.PdfColors.red50),
                       children: [
-                        pw.Padding(padding: const pw.EdgeInsets.all(6), child: pw.Text('المتبقي', style: pw.TextStyle(fontWeight: pw.FontWeight.bold, fontSize: 11))),
-                        pw.Padding(padding: const pw.EdgeInsets.all(6), child: pw.Text('${remaining.toStringAsFixed(0)} ج.م', style: const pw.TextStyle(fontWeight: pw.FontWeight.bold, fontSize: 12, color: pdfLib.PdfColors.red800))),
+                        pw.Padding(padding: const pw.EdgeInsets.all(6), child: pw.Text('المتبقي للتسديد', style: pw.TextStyle(fontWeight: pw.FontWeight.bold, fontSize: 11))),
+                        pw.Padding(padding: const pw.EdgeInsets.all(6), child: pw.Text('${remaining.toStringAsFixed(0)} ج.م', style: pw.TextStyle(fontWeight: pw.FontWeight.bold, fontSize: 11, color: pdfLib.PdfColors.red800))),
                       ],
                     ),
                   ],
                 ),
                 pw.Spacer(),
-                pw.Center(
-                  child: pw.Text('شكراً لتعاملكم معنا 🙏\nمحل $storeName', textAlign: pw.TextAlign.center, style: const pw.TextStyle(fontSize: 9, color: pdfLib.PdfColors.grey600)),
-                ),
+                pw.Center(child: pw.Text('شكراً لتعاملكم مع محل $storeName', style: const pw.TextStyle(fontSize: 10, color: pdfLib.PdfColors.grey700))),
               ],
             );
           },
@@ -297,16 +339,18 @@ class _HomeScreenState extends State<HomeScreen> {
   Future<void> _exportExcel() async {
     try {
       final excel = ex.Excel.createExcel();
-      final sheet = excel['حسابات $storeName'];
-      excel.setDefaultSheet('حسابات $storeName');
+      final sheet = excel['حسابات المشتركين'];
+      excel.setDefaultSheet('حسابات المشتركين');
       sheet.appendRow([
         ex.TextCellValue('الاسم'),
         ex.TextCellValue('الموبايل'),
-        ex.TextCellValue('المطلوب'),
+        ex.TextCellValue('نوع الباقة'),
+        ex.TextCellValue('سعر الباقة'),
+        ex.TextCellValue('المطلوب الكلي'),
         ex.TextCellValue('المدفوع'),
         ex.TextCellValue('المتبقي'),
-        ex.TextCellValue('الحالة'),
-        ex.TextCellValue('آخر سداد')
+        ex.TextCellValue('طريقة الدفع'),
+        ex.TextCellValue('يوم التجديد'),
       ]);
       final allData = await DatabaseHelper.instance.queryAll();
       for (var c in allData) {
@@ -315,87 +359,89 @@ class _HomeScreenState extends State<HomeScreen> {
         sheet.appendRow([
           ex.TextCellValue(c['name']),
           ex.TextCellValue(c['phone']),
+          ex.TextCellValue(c['plan_name'] ?? 'أساسية'),
+          ex.DoubleCellValue((c['monthly_fee'] as num).toDouble()),
           ex.DoubleCellValue(total),
           ex.DoubleCellValue(paid),
           ex.DoubleCellValue(total - paid),
-          ex.TextCellValue(c['status'] == 'paid' ? 'خالص' : 'عليه باقي'),
-          ex.TextCellValue(c['last_paid_date'] ?? '-')
+          ex.TextCellValue(c['payment_method'] ?? 'كاش'),
+          ex.IntCellValue(c['due_day'] ?? 1),
         ]);
       }
       final dir = await getApplicationDocumentsDirectory();
-      final fileName = '${storeName}_كشف_${DateFormat('yyyy-MM-dd').format(DateTime.now())}.xlsx';
+      final fileName = '${storeName}_حسابات_${DateFormat('yyyy-MM-dd').format(DateTime.now())}.xlsx';
       final file = File('${dir.path}/$fileName');
       await file.writeAsBytes(excel.encode()!);
-      await Share.shareXFiles([XFile(file.path)], text: 'كشف حسابات محل $storeName');
+      await Share.shareXFiles([XFile(file.path)], text: 'كشف حسابات المشتركين محل $storeName');
     } catch (e) {
       if (mounted) ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('خطأ: $e')));
     }
   }
 
-  Future<void> _importExcel() async {
-    FilePickerResult? result = await FilePicker.platform.pickFiles(type: FileType.custom, allowedExtensions: ['xlsx']);
-    if (result != null && result.files.single.path != null) {
-      var bytes = File(result.files.single.path!).readAsBytesSync();
-      var excel = ex.Excel.decodeBytes(bytes);
-      int count = 0;
-      for (var table in excel.tables.keys) {
-        var rows = excel.tables[table]!.rows;
-        for (int i = 1; i < rows.length; i++) {
-          var row = rows[i];
-          if (row.isEmpty || row[0]?.value == null) continue;
-          String name = row[0]?.value?.toString().trim() ?? '';
-          String phone = row.length > 1 ? (row[1]?.value?.toString().trim() ?? '') : '';
-          double total = 0;
-          if (row.length > 2 && row[2]?.value != null) total = double.tryParse(row[2]!.value.toString()) ?? 0;
-          if (name.isNotEmpty && !(await DatabaseHelper.instance.isPhoneExists(phone))) {
-            await DatabaseHelper.instance.insertCustomer({
-              'name': name,
-              'phone': phone,
-              'total_amount': total,
-              'paid_amount': 0.0,
-              'status': 'unpaid'
-            });
-            count++;
-          }
-        }
-      }
-      _refreshData();
-      if (mounted) ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('تم استيراد $count مشترك جديد')));
-    }
-  }
+  void _showCustomerDialog({Map<String, dynamic>? customer}) {
+    final isEdit = customer != null;
+    final nameCtrl = TextEditingController(text: isEdit ? customer['name'] : '');
+    final phoneCtrl = TextEditingController(text: isEdit ? customer['phone'] : '');
+    final planCtrl = TextEditingController(text: isEdit ? (customer['plan_name'] ?? 'باقة 100') : 'باقة 100');
+    final feeCtrl = TextEditingController(text: isEdit ? customer['monthly_fee'].toString() : '100');
+    final debtCtrl = TextEditingController(text: isEdit ? ((customer['total_amount'] as num) - (customer['paid_amount'] as num)).toString() : '0');
+    final dayCtrl = TextEditingController(text: isEdit ? customer['due_day'].toString() : '1');
 
-  void _showAddDialog() {
-    final nameCtrl = TextEditingController();
-    final phoneCtrl = TextEditingController();
-    final totalCtrl = TextEditingController();
     showDialog(
       context: context,
       builder: (ctx) => AlertDialog(
-        title: const Text('إضافة مشترك جديد'),
-        content: Column(
-          mainAxisSize: MainAxisSize.min,
-          children: [
-            TextField(controller: nameCtrl, decoration: const InputDecoration(labelText: 'اسم العميل')),
-            TextField(controller: phoneCtrl, keyboardType: TextInputType.phone, decoration: const InputDecoration(labelText: 'رقم الموبايل')),
-            TextField(controller: totalCtrl, keyboardType: TextInputType.number, decoration: const InputDecoration(labelText: 'المبلغ المطلوب')),
-          ],
+        title: Text(isEdit ? 'تعديل بيانات المشترك والباقة' : 'إضافة مشترك وباقة جديدة'),
+        content: SingleChildScrollView(
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              TextField(controller: nameCtrl, decoration: const InputDecoration(labelText: 'اسم العميل / المشترك')),
+              TextField(controller: phoneCtrl, keyboardType: TextInputType.phone, decoration: const InputDecoration(labelText: 'رقم الموبايل')),
+              TextField(controller: planCtrl, decoration: const InputDecoration(labelText: 'اسم / نوع الباقة (مثلاً: 140 جيجا)')),
+              TextField(controller: feeCtrl, keyboardType: TextInputType.number, decoration: const InputDecoration(labelText: 'سعر الباقة الشهري (ج.م)')),
+              TextField(controller: debtCtrl, keyboardType: TextInputType.number, decoration: InputDecoration(labelText: isEdit ? 'المتبقي الحالي (ج.م)' : 'متأخرات قديمة إن وجدت (ج.م)')),
+              TextField(controller: dayCtrl, keyboardType: TextInputType.number, decoration: const InputDecoration(labelText: 'يوم التجديد من كل شهر (مثلاً: 1)')),
+            ],
+          ),
         ),
         actions: [
           TextButton(onPressed: () => Navigator.pop(ctx), child: const Text('إلغاء')),
           ElevatedButton(
             onPressed: () async {
-              if (nameCtrl.text.trim().isEmpty || totalCtrl.text.isEmpty) return;
-              if (await DatabaseHelper.instance.isPhoneExists(phoneCtrl.text.trim())) {
-                if (mounted) ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('الرقم مسجل مسبقاً!')));
+              if (nameCtrl.text.trim().isEmpty || feeCtrl.text.isEmpty) return;
+              double fee = double.tryParse(feeCtrl.text) ?? 0.0;
+              double debt = double.tryParse(debtCtrl.text) ?? 0.0;
+              int day = int.tryParse(dayCtrl.text) ?? 1;
+
+              if (await DatabaseHelper.instance.isPhoneExists(phoneCtrl.text.trim(), excludeId: isEdit ? customer['id'] : null)) {
+                if (mounted) ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('رقم الموبايل مسجل لمشترك آخر!')));
                 return;
               }
-              await DatabaseHelper.instance.insertCustomer({
-                'name': nameCtrl.text.trim(),
-                'phone': phoneCtrl.text.trim(),
-                'total_amount': double.tryParse(totalCtrl.text) ?? 0.0,
-                'paid_amount': 0.0,
-                'status': 'unpaid'
-              });
+
+              if (isEdit) {
+                await DatabaseHelper.instance.updateCustomer(customer['id'], {
+                  'name': nameCtrl.text.trim(),
+                  'phone': phoneCtrl.text.trim(),
+                  'plan_name': planCtrl.text.trim(),
+                  'monthly_fee': fee,
+                  'total_amount': debt,
+                  'paid_amount': 0.0,
+                  'status': debt <= 0 ? 'paid' : 'unpaid',
+                  'due_day': day,
+                });
+              } else {
+                await DatabaseHelper.instance.insertCustomer({
+                  'name': nameCtrl.text.trim(),
+                  'phone': phoneCtrl.text.trim(),
+                  'plan_name': planCtrl.text.trim(),
+                  'monthly_fee': fee,
+                  'total_amount': fee + debt,
+                  'paid_amount': 0.0,
+                  'status': 'unpaid',
+                  'payment_method': 'كاش',
+                  'due_day': day,
+                });
+              }
               if (mounted) Navigator.pop(ctx);
               _refreshData();
             },
@@ -408,73 +454,93 @@ class _HomeScreenState extends State<HomeScreen> {
 
   void _showPayDialog(Map<String, dynamic> c) {
     final payCtrl = TextEditingController();
+    String selectedMethod = 'كاش';
     double total = (c['total_amount'] as num).toDouble();
     double paid = (c['paid_amount'] as num).toDouble();
     double remaining = total - paid;
+
     showDialog(
       context: context,
-      builder: (ctx) => AlertDialog(
-        title: Text('سداد: ${c['name']}'),
-        content: Column(
-          mainAxisSize: MainAxisSize.min,
-          crossAxisAlignment: CrossAxisAlignment.start,
-          children: [
-            Text('المتبقي: ${remaining.toStringAsFixed(0)} ج.م', style: const TextStyle(fontWeight: FontWeight.bold, color: Colors.red)),
-            const SizedBox(height: 12),
-            TextField(controller: payCtrl, keyboardType: TextInputType.number, autofocus: true, decoration: const InputDecoration(labelText: 'المبلغ الآن', border: OutlineInputBorder())),
-          ],
-        ),
-        actions: [
-          TextButton(
-            onPressed: () async {
-              await DatabaseHelper.instance.updatePayment(c['id'], total, paid, remaining);
-              if (mounted) Navigator.pop(ctx);
-              _refreshData();
-            },
-            child: const Text('سداد كامل', style: TextStyle(color: Colors.green)),
+      builder: (ctx) => StatefulBuilder(
+        builder: (context, setDialogState) => AlertDialog(
+          title: Text('تحصيل سداد: ${c['name']}'),
+          content: Column(
+            mainAxisSize: MainAxisSize.min,
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Text('نوع الباقة: ${c['plan_name']}', style: const TextStyle(fontWeight: FontWeight.bold)),
+              const SizedBox(height: 4),
+              Text('المتبقي المطلوب: ${remaining.toStringAsFixed(0)} ج.م', style: const TextStyle(fontWeight: FontWeight.bold, color: Colors.red, fontSize: 16)),
+              const SizedBox(height: 12),
+              TextField(
+                controller: payCtrl,
+                keyboardType: TextInputType.number,
+                autofocus: true,
+                decoration: const InputDecoration(labelText: 'المبلغ المدفوع الآن', border: OutlineInputBorder()),
+              ),
+              const SizedBox(height: 12),
+              const Text('طريقة السداد:'),
+              DropdownButton<String>(
+                value: selectedMethod,
+                isExpanded: true,
+                items: const [
+                  DropdownMenuItem(value: 'كاش', child: Text('💵 نقداً (كاش)')),
+                  DropdownMenuItem(value: 'فودافون كاش', child: Text('📱 فودافون كاش')),
+                  DropdownMenuItem(value: 'محفظة بنكية / فوري', child: Text('💳 محفظة إلكترونية / فوري')),
+                ],
+                onChanged: (val) {
+                  if (val != null) setDialogState(() => selectedMethod = val);
+                },
+              ),
+            ],
           ),
-          ElevatedButton(
-            onPressed: () async {
-              double addAmt = double.tryParse(payCtrl.text) ?? 0.0;
-              if (addAmt > 0) {
-                await DatabaseHelper.instance.updatePayment(c['id'], total, paid, addAmt);
+          actions: [
+            TextButton(
+              onPressed: () async {
+                await DatabaseHelper.instance.recordPayment(c['id'], total, paid, remaining, selectedMethod);
                 if (mounted) Navigator.pop(ctx);
                 _refreshData();
-              }
-            },
-            child: const Text('تأكيد'),
-          ),
-        ],
+              },
+              child: const Text('سداد كامل المبلغ', style: TextStyle(color: Colors.green)),
+            ),
+            ElevatedButton(
+              onPressed: () async {
+                double addAmt = double.tryParse(payCtrl.text) ?? 0.0;
+                if (addAmt > 0) {
+                  await DatabaseHelper.instance.recordPayment(c['id'], total, paid, addAmt, selectedMethod);
+                  if (mounted) Navigator.pop(ctx);
+                  _refreshData();
+                }
+              },
+              child: const Text('تأكيد التحصيل'),
+            ),
+          ],
+        ),
       ),
     );
   }
 
-  void _confirmReset() {
-    final confirmCtrl = TextEditingController();
+  void _confirmAutoMonthlyRenewal() {
     showDialog(
       context: context,
       builder: (ctx) => AlertDialog(
-        title: const Text('تصفير شهر جديد'),
-        content: Column(
-          mainAxisSize: MainAxisSize.min,
-          children: [
-            const Text('هتصفر كل المدفوعات! اكتب كلمة "تصفير"'),
-            const SizedBox(height: 8),
-            TextField(controller: confirmCtrl, decoration: const InputDecoration(hintText: 'اكتب تصفير', border: OutlineInputBorder())),
-          ],
+        title: const Text('بدء دورة اشتراكات شهر جديد 🔄'),
+        content: const Text(
+          'سيقوم النظام تلقائياً بإضافة قيمة الباقة الشهرية لكل المشتركين مع ترحيل أي مبالغ متأخرة لم يتم سدادها إلى حسابهم الجديد.\n\nهل تريد المتابعة؟',
         ),
         actions: [
           TextButton(onPressed: () => Navigator.pop(ctx), child: const Text('إلغاء')),
           ElevatedButton(
-            style: ElevatedButton.styleFrom(backgroundColor: Colors.red, foregroundColor: Colors.white),
+            style: ElevatedButton.styleFrom(backgroundColor: Colors.indigo, foregroundColor: Colors.white),
             onPressed: () async {
-              if (confirmCtrl.text.trim() == 'تصفير') {
-                await DatabaseHelper.instance.resetMonth();
-                if (mounted) Navigator.pop(ctx);
-                _refreshData();
+              int count = await DatabaseHelper.instance.renewMonthlyCycle();
+              if (mounted) {
+                Navigator.pop(ctx);
+                ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('تم تجديد وترحيل حسابات $count مشترك بنجاح!')));
               }
+              _refreshData();
             },
-            child: const Text('تأكيد'),
+            child: const Text('تأكيد التجديد الشهري'),
           ),
         ],
       ),
@@ -487,45 +553,39 @@ class _HomeScreenState extends State<HomeScreen> {
       appBar: AppBar(
         title: Row(
           children: [
-            Container(
-              width: 36,
-              height: 36,
-              decoration: BoxDecoration(color: Colors.white, borderRadius: BorderRadius.circular(8)),
-              child: const Icon(Icons.phone_android, color: Colors.indigo),
-            ),
-            const SizedBox(width: 10),
-            Text('محل $storeName', style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 18)),
+            const Icon(Icons.storefront, color: Colors.white),
+            const SizedBox(width: 8),
+            Text('محل $storeName للحسابات', style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 18)),
           ],
         ),
         backgroundColor: Colors.indigo,
         foregroundColor: Colors.white,
         actions: [
-          IconButton(icon: const Icon(Icons.file_upload), tooltip: 'استيراد إكسيل', onPressed: _importExcel),
+          IconButton(icon: const Icon(Icons.autorenew), tooltip: 'تجديد الدورة الشهرية', onPressed: _confirmAutoMonthlyRenewal),
           IconButton(icon: const Icon(Icons.share), tooltip: 'تصدير إكسيل', onPressed: _exportExcel),
-          IconButton(icon: const Icon(Icons.restart_alt), tooltip: 'شهر جديد', onPressed: _confirmReset),
         ],
       ),
       body: Column(
         children: [
           Container(
-            padding: const EdgeInsets.all(12),
+            padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 8),
             color: Colors.indigo.shade50,
             child: Row(
               children: [
-                _buildStatCard('المطلوب', _totalReq.toStringAsFixed(0), Colors.blue),
+                _buildStatCard('إجمالي المطلوب', _totalReq.toStringAsFixed(0), Colors.blue),
                 _buildStatCard('المحصل', _totalCollected.toStringAsFixed(0), Colors.green),
-                _buildStatCard('المتبقي', _remainingDebt.toStringAsFixed(0), Colors.red),
+                _buildStatCard('المتأخرات والديون', _remainingDebt.toStringAsFixed(0), Colors.red),
               ],
             ),
           ),
           Padding(
-            padding: const EdgeInsets.all(12),
+            padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
             child: Row(
               children: [
                 Expanded(
                   child: TextField(
                     decoration: const InputDecoration(
-                      hintText: 'بحث بالاسم أو الرقم...',
+                      hintText: 'بحث باسم العميل أو الرقم...',
                       prefixIcon: Icon(Icons.search),
                       isDense: true,
                       border: OutlineInputBorder(),
@@ -541,7 +601,7 @@ class _HomeScreenState extends State<HomeScreen> {
                   value: _filter,
                   items: const [
                     DropdownMenuItem(value: 'all', child: Text('الكل')),
-                    DropdownMenuItem(value: 'unpaid', child: Text('مديون')),
+                    DropdownMenuItem(value: 'unpaid', child: Text('عليه ديون')),
                     DropdownMenuItem(value: 'paid', child: Text('خالص')),
                   ],
                   onChanged: (val) {
@@ -556,7 +616,7 @@ class _HomeScreenState extends State<HomeScreen> {
           ),
           Expanded(
             child: _customers.isEmpty
-                ? const Center(child: Text('لا توجد بيانات مسجلة'))
+                ? const Center(child: Text('لا توجد اشتراكات مسجلة حالياً'))
                 : ListView.builder(
                     itemCount: _customers.length,
                     itemBuilder: (ctx, idx) {
@@ -565,31 +625,101 @@ class _HomeScreenState extends State<HomeScreen> {
                       double paid = (c['paid_amount'] as num).toDouble();
                       double remaining = total - paid;
                       bool isPaid = remaining <= 0;
+
                       return Card(
-                        margin: const EdgeInsets.symmetric(horizontal: 12, vertical: 5),
-                        elevation: 1.5,
-                        child: ListTile(
-                          leading: CircleAvatar(
-                            backgroundColor: isPaid ? Colors.green : Colors.red,
-                            child: Icon(isPaid ? Icons.check : Icons.person, color: Colors.white, size: 18),
-                          ),
-                          title: Text(c['name'], style: const TextStyle(fontWeight: FontWeight.bold)),
-                          subtitle: Text('${c['phone']} | باقي: ${remaining.toStringAsFixed(0)} ج.م | مطلوب: ${total.toStringAsFixed(0)}'),
-                          trailing: Wrap(
-                            spacing: 0,
+                        margin: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
+                        elevation: 2,
+                        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(10)),
+                        child: Padding(
+                          padding: const EdgeInsets.all(12),
+                          child: Column(
+                            crossAxisAlignment: CrossAxisAlignment.start,
                             children: [
-                              if (!isPaid)
-                                IconButton(icon: const Icon(Icons.payment, color: Colors.blue, size: 22), tooltip: 'دفع', onPressed: () => _showPayDialog(c)),
-                              IconButton(icon: const Icon(Icons.receipt_long, color: Colors.deepPurple, size: 22), tooltip: 'فاتورة PDF', onPressed: () => _generateInvoice(c)),
-                              if (!isPaid)
-                                IconButton(icon: const Icon(Icons.chat, color: Colors.green, size: 22), tooltip: 'واتساب', onPressed: () => _sendWhatsApp(c['phone'], c['name'], total, remaining)),
-                              IconButton(
-                                icon: const Icon(Icons.delete_outline, color: Colors.red, size: 22),
-                                tooltip: 'حذف',
-                                onPressed: () async {
-                                  await DatabaseHelper.instance.deleteCustomer(c['id']);
-                                  _refreshData();
-                                },
+                              Row(
+                                crossAxisAlignment: CrossAxisAlignment.center,
+                                children: [
+                                  CircleAvatar(
+                                    backgroundColor: isPaid ? Colors.green : Colors.red,
+                                    radius: 18,
+                                    child: Icon(isPaid ? Icons.check : Icons.person, color: Colors.white, size: 20),
+                                  ),
+                                  const SizedBox(width: 10),
+                                  Expanded(
+                                    child: Column(
+                                      crossAxisAlignment: CrossAxisAlignment.start,
+                                      children: [
+                                        Text(
+                                          c['name'],
+                                          style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 16),
+                                        ),
+                                        Text(
+                                          '${c['phone']} • ${c['plan_name']}',
+                                          style: TextStyle(color: Colors.grey.shade700, fontSize: 12),
+                                        ),
+                                      ],
+                                    ),
+                                  ),
+                                  Container(
+                                    padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
+                                    decoration: BoxDecoration(
+                                      color: isPaid ? Colors.green.shade50 : Colors.red.shade50,
+                                      borderRadius: BorderRadius.circular(6),
+                                      border: Border.all(color: isPaid ? Colors.green : Colors.red),
+                                    ),
+                                    child: Text(
+                                      isPaid ? 'خالص' : 'باقي: ${remaining.toStringAsFixed(0)} ج.م',
+                                      style: TextStyle(
+                                        color: isPaid ? Colors.green.shade900 : Colors.red.shade900,
+                                        fontWeight: FontWeight.bold,
+                                        fontSize: 12,
+                                      ),
+                                    ),
+                                  ),
+                                ],
+                              ),
+                              const Divider(height: 16),
+                              Row(
+                                mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                                children: [
+                                  Text('الباقة: ${c['monthly_fee']} ج.م | السداد: ${c['payment_method'] ?? "كاش"}', style: const TextStyle(fontSize: 12)),
+                                  Text('تجديد يوم: ${c['due_day'] ?? 1}', style: const TextStyle(fontSize: 12, color: Colors.blueGrey)),
+                                ],
+                              ),
+                              const SizedBox(height: 8),
+                              Row(
+                                mainAxisAlignment: MainAxisAlignment.end,
+                                children: [
+                                  if (!isPaid)
+                                    IconButton(
+                                      icon: const Icon(Icons.payment, color: Colors.blue),
+                                      tooltip: 'سداد',
+                                      onPressed: () => _showPayDialog(c),
+                                    ),
+                                  IconButton(
+                                    icon: const Icon(Icons.edit, color: Colors.orange),
+                                    tooltip: 'تعديل الباقة والبيانات',
+                                    onPressed: () => _showCustomerDialog(customer: c),
+                                  ),
+                                  IconButton(
+                                    icon: const Icon(Icons.receipt_long, color: Colors.purple),
+                                    tooltip: 'فاتورة PDF',
+                                    onPressed: () => _generateInvoice(c),
+                                  ),
+                                  if (!isPaid)
+                                    IconButton(
+                                      icon: const Icon(Icons.chat, color: Colors.green),
+                                      tooltip: 'إشعار واتساب',
+                                      onPressed: () => _sendWhatsApp(c['phone'], c['name'], c['plan_name'] ?? 'الاشتراك', total, remaining),
+                                    ),
+                                  IconButton(
+                                    icon: const Icon(Icons.delete_outline, color: Colors.red),
+                                    tooltip: 'حذف',
+                                    onPressed: () async {
+                                      await DatabaseHelper.instance.deleteCustomer(c['id']);
+                                      _refreshData();
+                                    },
+                                  ),
+                                ],
                               ),
                             ],
                           ),
@@ -601,10 +731,10 @@ class _HomeScreenState extends State<HomeScreen> {
         ],
       ),
       floatingActionButton: FloatingActionButton.extended(
-        onPressed: _showAddDialog,
+        onPressed: () => _showCustomerDialog(),
         backgroundColor: Colors.indigo,
         icon: const Icon(Icons.person_add, color: Colors.white),
-        label: const Text('عميل جديد', style: TextStyle(color: Colors.white)),
+        label: const Text('مشترك جديد', style: TextStyle(color: Colors.white)),
       ),
     );
   }
