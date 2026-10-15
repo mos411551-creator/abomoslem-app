@@ -35,13 +35,7 @@ jobs:
           flutter pub add sqflite path url_launcher excel path_provider share_plus file_picker intl pdf printing
           flutter pub add --dev flutter_launcher_icons
           if [ -f app_icon.png ]; then
-            cat << 'EOF' >> pubspec.yaml
-
-flutter_launcher_icons:
-  android: "launcher_icon"
-  ios: false
-  image_path: "app_icon.png"
-EOF
+            printf "\nflutter_launcher_icons:\n  android: \"launcher_icon\"\n  ios: false\n  image_path: \"app_icon.png\"\n" >> pubspec.yaml
             dart run flutter_launcher_icons || true
           fi
 
@@ -54,4 +48,3 @@ EOF
         with:
           name: abomoslem-app
           path: build/app/outputs/flutter-apk/app-release.apk
-          
