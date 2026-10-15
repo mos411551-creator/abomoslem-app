@@ -26,27 +26,33 @@ jobs:
           rm -rf android
           flutter create . --project-name=abomoslem_app --platforms=android --org=com.abomoslem --overwrite
 
-          cat << 'EOF' >> android/build.gradle
+          python3 -c "
+          import glob, os
+
+          # تعديل build.gradle الرئيسي لفرض compileSdkVersion للمكتبات الفرعية (حل مشكلة lStar)
+          for root_gradle in glob.glob('android/build.gradle*'):
+              with open(root_gradle, 'a') as f:
+                  f.write('''
           subprojects {
               afterEvaluate { project ->
-                  if (project.hasProperty("android")) {
+                  if (project.hasProperty('android')) {
                       android {
                           compileSdkVersion 34
-                          buildToolsVersion "34.0.0"
                       }
                   }
               }
           }
-          EOF
+          ''')
 
-          python3 -c "
-          with open('android/app/build.gradle', 'r') as f:
-              s = f.read()
-          s = s.replace('flutter.compileSdkVersion', '34')
-          s = s.replace('flutter.targetSdkVersion', '34')
-          s = s.replace('flutter.minSdkVersion', '21')
-          with open('android/app/build.gradle', 'w') as f:
-              f.write(s)
+          # تعديل ملف app gradle لرفع compileSdk و targetSdk و minSdk
+          for app_gradle in glob.glob('android/app/build.gradle*'):
+              with open(app_gradle, 'r') as f:
+                  content = f.read()
+              content = content.replace('flutter.compileSdkVersion', '34')
+              content = content.replace('flutter.targetSdkVersion', '34')
+              content = content.replace('flutter.minSdkVersion', '21')
+              with open(app_gradle, 'w') as f:
+                  f.write(content)
           "
 
           cat << 'EOF' > pubspec.yaml
